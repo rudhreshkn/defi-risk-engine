@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "monitor": "tsx src/index.ts --monitor",
+    "demo": "tsx src/demo.ts",
     "test": "tsx src/test.ts"
   },
   "dependencies": {

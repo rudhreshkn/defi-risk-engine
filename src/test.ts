@@ -18,6 +18,7 @@ import { LoggerSilent } from "./services/Logger.js"
 import { AlertNotifierSilent } from "./services/AlertNotifier.js"
 import { AppConfigTest } from "./services/AppConfig.js"
 import { ClockTest } from "./services/Clock.js"
+import { RateLimiterTest } from "./services/RateLimiter.js"
 import { runAnalysis } from "./workflows/analyse.js"
 import type { Portfolio, PortfolioValuation, RiskMetrics } from "./domain/models.js"
 import * as Risk from "./domain/risk.js"
@@ -256,7 +257,8 @@ async function testEffectfulWorkflow() {
     LoggerSilent,
     AlertNotifierSilent,
     AppConfigTest,
-    ClockTest
+    ClockTest,
+    RateLimiterTest
   )
 
   const mockPortfolio: Portfolio = {
@@ -309,7 +311,8 @@ async function testGracefulDegradation() {
     LoggerSilent,
     AlertNotifierSilent,
     AppConfigTest,
-    ClockTest
+    ClockTest,
+    RateLimiterTest
   )
 
   const mockPortfolio: Portfolio = {
@@ -338,7 +341,8 @@ async function testSingleAssetPortfolio() {
     LoggerSilent,
     AlertNotifierSilent,
     AppConfigTest,
-    ClockTest
+    ClockTest,
+    RateLimiterTest
   )
 
   const singleAsset: Portfolio = {
@@ -364,7 +368,8 @@ async function testLargePortfolio() {
     LoggerSilent,
     AlertNotifierSilent,
     AppConfigTest,
-    ClockTest
+    ClockTest,
+    RateLimiterTest
   )
 
   const large: Portfolio = {

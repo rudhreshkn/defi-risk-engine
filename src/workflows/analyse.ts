@@ -20,6 +20,7 @@ import { Logger } from "../services/Logger.js"
 import { AlertNotifier } from "../services/AlertNotifier.js"
 import { AppConfig } from "../services/AppConfig.js"
 import { Clock } from "../services/Clock.js"
+import { RateLimiter } from "../services/RateLimiter.js"
 import * as Risk from "../domain/risk.js"
 import type { Portfolio, AnalysisResult } from "../domain/models.js"
 
@@ -33,6 +34,7 @@ export const runAnalysis = (portfolio: Portfolio) =>
     const alertNotifier = yield* AlertNotifier
     const config = yield* AppConfig
     const clock = yield* Clock
+    const rateLimiter = yield* RateLimiter
 
     yield* logger.info("Starting portfolio analysis", {
       portfolio: portfolio.name,
@@ -48,6 +50,9 @@ export const runAnalysis = (portfolio: Portfolio) =>
     // ── Step 1: Fetch current prices (effect: network I/O) ─────
     const coinIds = portfolio.holdings.map((h) => h.coinGeckoId)
     yield* logger.debug("Fetching current prices", { coins: coinIds })
+
+    // Acquire rate limit token before API call (effect: Ref state)
+    yield* rateLimiter.acquire()
 
     const prices = yield* priceFeed.getCurrentPrices(coinIds).pipe(
       Effect.retry(retryPolicy),
@@ -73,7 +78,13 @@ export const runAnalysis = (portfolio: Portfolio) =>
 
     const historicalResult = yield* Effect.all(
       coinIds.map((id) =>
-        priceFeed.getHistoricalPrices(id, 30).pipe(Effect.retry(retryPolicy))
+        Effect.gen(function* () {
+          // Acquire rate limit token per historical fetch (effect: Ref state)
+          yield* rateLimiter.acquire()
+          return yield* priceFeed.getHistoricalPrices(id, 30).pipe(
+            Effect.retry(retryPolicy)
+          )
+        })
       ),
       { concurrency: config.priceFeedConcurrency }
     ).pipe(

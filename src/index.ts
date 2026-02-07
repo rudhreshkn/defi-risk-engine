@@ -34,6 +34,7 @@ import { LoggerLive, Logger } from "./services/Logger.js"
 import { AlertNotifierLive } from "./services/AlertNotifier.js"
 import { AppConfigLive, AppConfig } from "./services/AppConfig.js"
 import { ClockLive } from "./services/Clock.js"
+import { RateLimiterLive } from "./services/RateLimiter.js"
 import { runAnalysis } from "./workflows/analyse.js"
 import { renderAnalysis } from "./display.js"
 import type { AnalysisResult, Portfolio } from "./domain/models.js"
@@ -54,7 +55,8 @@ const AppLive = Layer.mergeAll(
   LoggerLive,
   AlertNotifierLive,
   AppConfigLive,
-  ClockLive
+  ClockLive,
+  RateLimiterLive
 )
 
 // ─── CLI Arguments ─────────────────────────────────────────────

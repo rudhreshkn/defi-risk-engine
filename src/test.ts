@@ -22,6 +22,7 @@ import { RateLimiterTest } from "./services/RateLimiter.js"
 import { runAnalysis } from "./workflows/analyse.js"
 import type { Portfolio, PortfolioValuation, RiskMetrics } from "./domain/models.js"
 import * as Risk from "./domain/risk.js"
+import { decodePortfolio } from "./domain/models.js"
 
 let passed = 0
 let failed = 0
@@ -391,6 +392,67 @@ async function testLargePortfolio() {
   assert(result.risk.concentrationHHI < 1.0, `10 assets → HHI < 1.0 (got ${result.risk.concentrationHHI.toFixed(3)})`)
 }
 
+function testSchemaValidation() {
+  section("Schema Validation", "branded types")
+
+  // Valid portfolio
+  const valid = decodePortfolio({
+    name: "Test",
+    holdings: [{ symbol: "BTC", coinGeckoId: "bitcoin", amount: 1.0 }],
+  })
+  assert(valid.name === "Test", "valid portfolio passes Schema")
+  assert(valid.holdings.length === 1, "holdings preserved after validation")
+
+  // Missing name field
+  let caughtMissing = false
+  try {
+    decodePortfolio({ holdings: [] })
+  } catch {
+    caughtMissing = true
+  }
+  assert(caughtMissing, "missing name field → Schema rejects")
+
+  // Negative amount
+  let caughtNegative = false
+  try {
+    decodePortfolio({
+      name: "Bad",
+      holdings: [{ symbol: "X", coinGeckoId: "x", amount: -5 }],
+    })
+  } catch {
+    caughtNegative = true
+  }
+  assert(caughtNegative, "negative amount → Schema rejects")
+
+  // Wrong type for amount
+  let caughtType = false
+  try {
+    decodePortfolio({
+      name: "Bad",
+      holdings: [{ symbol: "X", coinGeckoId: "x", amount: "not a number" }],
+    })
+  } catch {
+    caughtType = true
+  }
+  assert(caughtType, "string amount → Schema rejects")
+
+  // Missing coinGeckoId
+  let caughtField = false
+  try {
+    decodePortfolio({
+      name: "Bad",
+      holdings: [{ symbol: "X", amount: 1.0 }],
+    })
+  } catch {
+    caughtField = true
+  }
+  assert(caughtField, "missing coinGeckoId → Schema rejects")
+
+  // Empty holdings is valid
+  const empty = decodePortfolio({ name: "Empty", holdings: [] })
+  assert(empty.holdings.length === 0, "empty holdings array is valid")
+}
+
 async function testPriceFeedFailover() {
   section("PriceFeed Failover", "primary fails → fallback used")
 
@@ -461,6 +523,7 @@ async function main() {
   testRiskMetrics()
   testPortfolioReturns()
   testAlertGeneration()
+  testSchemaValidation()
 
   // Effectful tests (mock layers, no real I/O)
   await testEffectfulWorkflow()

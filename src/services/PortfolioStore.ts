@@ -4,6 +4,7 @@
 
 import { Context, Effect, Layer, Data } from "effect"
 import type { Portfolio, AnalysisResult } from "../domain/models.js"
+import { decodePortfolio } from "../domain/models.js"
 import * as fs from "node:fs"
 
 // ─── Typed Error ───────────────────────────────────────────────
@@ -38,10 +39,13 @@ export const PortfolioStoreLive = Layer.succeed(PortfolioStore, {
     Effect.try({
       try: () => {
         const content = fs.readFileSync(path, "utf-8")
-        return JSON.parse(content) as Portfolio
+        const raw = JSON.parse(content)
+        // Validate portfolio structure with Effect Schema at I/O boundary.
+        // Rejects malformed JSON: missing fields, negative amounts, wrong types.
+        return decodePortfolio(raw) as Portfolio
       },
       catch: (error) =>
-        new StoreError({ reason: `Failed to load portfolio from ${path}`, cause: error }),
+        new StoreError({ reason: `Failed to load/validate portfolio from ${path}`, cause: error }),
     }),
 
   saveResult: (path, result) =>

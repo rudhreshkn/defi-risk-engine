@@ -1,0 +1,10 @@
+{
+  "name": "DeFi Portfolio",
+  "holdings": [
+    { "symbol": "BTC",  "coinGeckoId": "bitcoin",      "amount": 0.15  },
+    { "symbol": "ETH",  "coinGeckoId": "ethereum",     "amount": 2.0   },
+    { "symbol": "SOL",  "coinGeckoId": "solana",       "amount": 25.0  },
+    { "symbol": "AVAX", "coinGeckoId": "avalanche-2",  "amount": 40.0  },
+    { "symbol": "LINK", "coinGeckoId": "chainlink",    "amount": 75.0  }
+  ]
+}

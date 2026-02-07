@@ -391,6 +391,63 @@ async function testLargePortfolio() {
   assert(result.risk.concentrationHHI < 1.0, `10 assets → HHI < 1.0 (got ${result.risk.concentrationHHI.toFixed(3)})`)
 }
 
+async function testPriceFeedFailover() {
+  section("PriceFeed Failover", "primary fails → fallback used")
+
+  // Primary always fails, fallback succeeds
+  const FailoverPriceFeed = Layer.succeed(PriceFeed, {
+    getCurrentPrices: (coinIds) =>
+      // Simulate: primary (CoinGecko) fails, then orElse triggers fallback
+      Effect.fail(
+        new PriceFeedError({ reason: "Primary source down" })
+      ).pipe(
+        Effect.orElse(() =>
+          Effect.succeed(
+            coinIds.map((id) => ({
+              coinGeckoId: id,
+              priceUsd: 99999,
+              change24h: 0,
+            }))
+          )
+        )
+      ),
+    getHistoricalPrices: (coinId) =>
+      Effect.fail(
+        new PriceFeedError({ reason: "Primary source down" })
+      ).pipe(
+        Effect.orElse(() =>
+          Effect.succeed({
+            coinGeckoId: coinId,
+            dailyPrices: Array.from({ length: 31 }, (_, i) => 100 + Math.sin(i) * 5),
+          })
+        )
+      ),
+  })
+
+  const TestLayer = Layer.mergeAll(
+    FailoverPriceFeed,
+    PortfolioStoreTest,
+    LoggerSilent,
+    AlertNotifierSilent,
+    AppConfigTest,
+    ClockTest,
+    RateLimiterTest
+  )
+
+  const portfolio: Portfolio = {
+    name: "Failover Test",
+    holdings: [{ symbol: "BTC", coinGeckoId: "bitcoin", amount: 1.0 }],
+  }
+
+  const result = await Effect.runPromise(
+    runAnalysis(portfolio).pipe(Effect.provide(TestLayer))
+  )
+
+  assert(result.valuation.totalValueUsd === 99999, "failover price used ($99,999)")
+  assert(result.valuation.holdings[0].price === 99999, "holding shows fallback price")
+  assert(result.risk.volatilityAnnualised > 0, "historical from fallback → volatility computed")
+}
+
 // ─── Run All ───────────────────────────────────────────────────
 
 async function main() {
@@ -410,6 +467,7 @@ async function main() {
   await testGracefulDegradation()
   await testSingleAssetPortfolio()
   await testLargePortfolio()
+  await testPriceFeedFailover()
 
   // Summary
   console.log("\n" + "═".repeat(56))

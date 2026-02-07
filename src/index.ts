@@ -111,24 +111,11 @@ const monitorStream = (
     // Render each result with optional comparison to previous
     Stream.tap(([previousOpt, current]) =>
       Effect.sync(() => {
+        const previous = Option.isSome(previousOpt) ? previousOpt.value : null
         console.clear()
-        console.log(renderAnalysis(current))
-
-        // Show delta from previous cycle if available
-        if (Option.isSome(previousOpt)) {
-          const previous = previousOpt.value
-          const valueDelta = current.valuation.totalValueUsd - previous.valuation.totalValueUsd
-          const varDelta = current.risk.valueAtRisk95 - previous.risk.valueAtRisk95
-          const sign = (n: number) => (n >= 0 ? "+" : "")
-          console.log(`  \x1b[2mSince last cycle:\x1b[0m`)
-          console.log(
-            `    Portfolio: ${sign(valueDelta)}$${valueDelta.toFixed(2)}` +
-            `    VaR 95%: ${sign(varDelta)}$${varDelta.toFixed(2)}`
-          )
-        }
-
+        console.log(renderAnalysis(current, previous))
         console.log(
-          `\n  \x1b[2mNext update in ${intervalSeconds}s... (Ctrl+C to exit)\x1b[0m`
+          `  \x1b[2mNext update in ${intervalSeconds}s... (Ctrl+C to exit)\x1b[0m`
         )
       })
     )
@@ -166,8 +153,14 @@ const program = Effect.gen(function* () {
     )
   } else {
     // ── Single-Shot Mode ─────────────────────────────────────
+    // Load previous result from history for comparison
+    const history = yield* store.loadHistory(config.historyPath).pipe(
+      Effect.catchAll(() => Effect.succeed([] as AnalysisResult[]))
+    )
+    const previous = history.length > 0 ? history[history.length - 1] : null
+
     const result = yield* runAnalysis(portfolio)
-    yield* Effect.sync(() => console.log(renderAnalysis(result)))
+    yield* Effect.sync(() => console.log(renderAnalysis(result, previous)))
   }
 })
 

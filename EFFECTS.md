@@ -6,30 +6,37 @@ Every interaction this system has with the outside world is modelled as an expli
 
 | Effect | Service | Source | What it does to / observes from the world |
 |---|---|---|---|
-| **Network I/O** | `PriceFeed` | [`src/services/PriceFeed.ts`](src/services/PriceFeed.ts) | HTTP GET to CoinGecko API for live prices and 30-day historical price series |
-| **File I/O** | `PortfolioStore` | [`src/services/PortfolioStore.ts`](src/services/PortfolioStore.ts) | Reads portfolio config JSON; reads/writes analysis history JSON |
-| **Configuration** | `AppConfig` | [`src/services/AppConfig.ts`](src/services/AppConfig.ts) | Reads environment variables for risk thresholds, paths, concurrency, and retry settings via Effect's `Config` module |
-| **Time** | `Clock` | [`src/services/Clock.ts`](src/services/Clock.ts) | Observes the system clock for timestamps (deterministic in tests) |
+| **Network I/O** | `PriceFeed` | [`src/services/PriceFeed.ts`](src/services/PriceFeed.ts) | HTTP GET to CoinGecko (primary) and CoinCap (fallback) APIs. Responses validated with Effect Schema. Automatic failover via `Effect.orElse`. |
+| **File I/O** | `PortfolioStore` | [`src/services/PortfolioStore.ts`](src/services/PortfolioStore.ts) | Reads portfolio config (validated with Schema); reads/writes analysis history JSON |
+| **Configuration** | `AppConfig` | [`src/services/AppConfig.ts`](src/services/AppConfig.ts) | Reads environment variables via Effect's `Config` module for thresholds, paths, concurrency, retry settings |
+| **Time** | `Clock` | [`src/services/Clock.ts`](src/services/Clock.ts) | Observes system clock for timestamps (deterministic in tests via fixed date) |
+| **Functional State** | `RateLimiter` | [`src/services/RateLimiter.ts`](src/services/RateLimiter.ts) | Token-bucket rate limiter using `Effect.Ref` for managed mutable state. Transparently delays API calls when budget is exhausted. |
 | **Logging** | `Logger` | [`src/services/Logger.ts`](src/services/Logger.ts) | Structured, timestamped log output to stdout/stderr |
 | **Notification** | `AlertNotifier` | [`src/services/AlertNotifier.ts`](src/services/AlertNotifier.ts) | Formatted risk alerts to stdout when thresholds are breached |
-| **Scheduling** | `Schedule` (Effect built-in) | [`src/index.ts`](src/index.ts), [`src/workflows/analyse.ts`](src/workflows/analyse.ts) | Configurable polling interval for monitoring mode; exponential backoff for retries |
+| **Scheduling** | `Schedule` (built-in) | [`src/index.ts`](src/index.ts), [`src/workflows/analyse.ts`](src/workflows/analyse.ts) | Configurable polling via `Effect.Stream` + `Schedule`; exponential backoff for retries |
 | **Concurrency** | `Effect.all` | [`src/workflows/analyse.ts`](src/workflows/analyse.ts) | Parallel fetching of historical price series (configurable concurrency limit) |
-| **Error / Retry** | `Effect.retry` + `Schedule.exponential` | [`src/workflows/analyse.ts`](src/workflows/analyse.ts) | Configurable exponential backoff on API failures with graceful degradation to cached data |
+| **Streaming** | `Effect.Stream` | [`src/index.ts`](src/index.ts) | Reactive monitoring pipeline: tick → analyse → filter failures → track previous → render with deltas |
+| **Validation** | `Effect.Schema` | [`src/domain/models.ts`](src/domain/models.ts), [`src/services/PriceFeed.ts`](src/services/PriceFeed.ts) | Runtime validation of all external data (portfolio JSON, API responses) at I/O boundaries using branded types |
 
 ## Effect Definitions (Code References)
 
-Services are defined as `Context.Tag` classes. Each has a live implementation (`*Live` layer) and a test implementation (`*Test` / `*Silent` layer):
+### Custom Services (7)
 
-| Service | Tag definition | Live layer | Test layer |
-|---|---|---|---|
-| `PriceFeed` | `Context.Tag("@app/PriceFeed")` | `PriceFeedLive` — CoinGecko HTTP | `PriceFeedTest` — deterministic synthetic prices |
-| `PortfolioStore` | `Context.Tag("@app/PortfolioStore")` | `PortfolioStoreLive` — Node.js `fs` | `PortfolioStoreTest` — in-memory mock |
-| `AppConfig` | `Context.Tag("@app/AppConfig")` | `AppConfigLive` — `Config.*` from env vars | `AppConfigTest` — hardcoded defaults |
-| `Clock` | `Context.Tag("@app/Clock")` | `ClockLive` — `new Date()` | `ClockTest` — fixed date (`2026-01-15T12:00:00Z`) |
-| `Logger` | `Context.Tag("@app/Logger")` | `LoggerLive` — `console.*` | `LoggerSilent` — no-op |
-| `AlertNotifier` | `Context.Tag("@app/AlertNotifier")` | `AlertNotifierLive` — coloured console | `AlertNotifierSilent` — no-op |
+Each service is defined as a `Context.Tag` class with a live implementation and a test implementation:
 
-**Layer composition** happens in [`src/index.ts`](src/index.ts):
+| Service | Tag | Live layer | Test layer | Key Effect pattern |
+|---|---|---|---|---|
+| `PriceFeed` | `@app/PriceFeed` | CoinGecko + CoinCap HTTP | Deterministic synthetic data | `Effect.orElse` (failover) |
+| `PortfolioStore` | `@app/PortfolioStore` | Node.js `fs` + Schema validation | In-memory mock | `Schema.decodeUnknownSync` |
+| `AppConfig` | `@app/AppConfig` | `Config.*` from env vars | Hardcoded defaults | `Config.withDefault` |
+| `Clock` | `@app/Clock` | `new Date()` | Fixed date (2026-01-15) | `Effect.sync` |
+| `RateLimiter` | `@app/RateLimiter` | Token bucket via `Ref` | No-op (instant) | `Ref.make`, `Ref.modify` |
+| `Logger` | `@app/Logger` | `console.*` | Silent no-op | `Effect.sync` |
+| `AlertNotifier` | `@app/AlertNotifier` | Coloured console | Silent no-op | `Effect.sync` |
+
+### Layer Composition
+
+All layers are composed in [`src/index.ts`](src/index.ts):
 
 ```typescript
 const AppLive = Layer.mergeAll(
@@ -38,19 +45,37 @@ const AppLive = Layer.mergeAll(
   LoggerLive,
   AlertNotifierLive,
   AppConfigLive,
-  ClockLive
+  ClockLive,
+  RateLimiterLive
 )
 ```
 
-Swapping any `*Live` layer for its `*Test` counterpart changes the entire application's behaviour without modifying a single line of business logic. The test suite demonstrates this: it runs the full analysis pipeline with `PriceFeedTest`, `ClockTest`, etc., producing deterministic results with zero I/O.
+Swapping any `*Live` layer for its `*Test` counterpart changes the entire application's behaviour without modifying business logic. The test suite demonstrates this across 65 tests.
+
+### Advanced Effect Patterns Used
+
+| Pattern | Where | What it demonstrates |
+|---|---|---|
+| **`Ref` (functional mutable state)** | `RateLimiter` | Token count managed atomically via `Ref.modify` — no mutable variables |
+| **`Effect.orElse` (failover composition)** | `PriceFeed` | CoinGecko failure transparently falls back to CoinCap |
+| **`Schema.brand` (branded types)** | `models.ts` | `USD`, `Percentage`, `Weight`, `CoinGeckoId` prevent type confusion at compile time |
+| **`Schema.decodeUnknown` (runtime validation)** | `PriceFeed`, `PortfolioStore` | External data validated at I/O boundary before entering pure core |
+| **`Stream` (reactive pipeline)** | `index.ts` | Monitor mode as `Stream.fromSchedule → mapEffect → filter → zipWithPrevious → tap` |
+| **`Schedule.exponential` (retry policy)** | `analyse.ts` | Configurable exponential backoff on API failures |
+| **`Effect.all` (structured concurrency)** | `analyse.ts` | Parallel historical price fetches with configurable concurrency limit |
+| **`Config` (typed configuration)** | `AppConfig` | All settings loaded from env vars with typed defaults |
 
 ## Pure Core (Business Logic)
 
-The deterministic core lives in `src/domain/` and has **zero** Effect dependencies — it imports nothing from `effect`, contains no services, and performs no I/O.
+The deterministic core lives in `src/domain/` and has **zero** dependencies on any Effect service — all risk calculations are pure functions.
 
-### `src/domain/models.ts` — Domain types
+### `src/domain/models.ts` — Domain types + branded primitives
 
-Pure data structures: `Portfolio`, `TokenHolding`, `TokenPrice`, `HistoricalPrices`, `PortfolioValuation`, `RiskMetrics`, `RiskAlert`, `AnalysisResult`.
+Branded types: `CoinGeckoId`, `TokenSymbol`, `USD`, `Percentage`, `Weight`, `ISOTimestamp`
+
+Schema-validated structures: `TokenHoldingSchema`, `PortfolioSchema` with constraints (e.g. amount must be positive)
+
+Runtime interfaces: `Portfolio`, `TokenPrice`, `HistoricalPrices`, `PortfolioValuation`, `RiskMetrics`, `RiskAlert`, `AnalysisResult`
 
 ### `src/domain/risk.ts` — Risk calculations
 
@@ -61,8 +86,8 @@ All functions are **pure**: given the same inputs, they always produce the same 
 | `valuatePortfolio()` | Market value and weight of each holding |
 | `calculateDailyReturns()` | Simple returns from a price series |
 | `calculatePortfolioReturns()` | Weighted portfolio returns from per-token returns |
-| `calculateRiskMetrics()` | VaR (parametric, 95%/99%), annualised volatility, Sharpe ratio, HHI concentration index, maximum drawdown |
-| `generateAlerts()` | Threshold-based risk alerts from metrics |
+| `calculateRiskMetrics()` | VaR (parametric, 95%/99%), annualised volatility, Sharpe ratio, HHI concentration, max drawdown |
+| `generateAlerts()` | Threshold-based risk alerts from metrics (configurable thresholds) |
 
 ### Data flow
 
@@ -70,29 +95,35 @@ All functions are **pure**: given the same inputs, they always produce the same 
   Environment variables
           │
           ▼
-    AppConfig (env)
-          │
-  Portfolio config (file)
-          │
-          ▼
-    Current prices  ←── PriceFeed (network, retries)
-          │
-          ▼
-    Valuation (pure)
-          │
-          ├── Historical prices  ←── PriceFeed (network, concurrent ×N)
-          │          │                    │
-          │          │              [on failure]
-          │          │                    ▼
-          │          │            Cached history (file)
-          │          ▼
-          │   Daily returns (pure)
-          │          │
-          │          ▼
-          └── Risk metrics (pure)
-                     │
-                     ▼
-              Alerts (pure, configurable thresholds)
+    AppConfig (env)───────────────────────────┐
+          │                                    │
+  Portfolio config (file)                      │
+     [Schema validated]                        │
+          │                                    │
+          ▼                                    │
+    Current prices  ←── PriceFeed              │
+     [rate limited]     [CoinGecko → CoinCap]  │
+     [Schema validated]                        │
+          │                                    │
+          ▼                                    │
+    Valuation (pure)                           │
+          │                                    │
+          ├── Historical prices  ←── PriceFeed │
+          │    [rate limited, concurrent ×N]    │
+          │    [Schema validated]               │
+          │          │                         │
+          │    [on failure]                     │
+          │          ▼                         │
+          │    Cached history (file)            │
+          │          │                         │
+          │          ▼                         │
+          │   Daily returns (pure)             │
+          │          │                         │
+          │          ▼                         │
+          └── Risk metrics (pure)              │
+                     │                         │
+                     ▼                         │
+              Alerts (pure) ◄──── thresholds ──┘
                      │
              ┌───────┼───────┐
              ▼       ▼       ▼
@@ -100,29 +131,25 @@ All functions are **pure**: given the same inputs, they always produce the same 
      (file)  (console)  (clock)
 ```
 
-Arrows marked **(pure)** involve no services — they are deterministic transformations. Arrows marked with a service name are effectful boundaries.
-
-**Graceful degradation:** If historical price fetching fails (e.g. rate limiting), the pipeline falls back to the last cached analysis result rather than aborting. If no cache exists, it computes concentration (which needs only current weights, not history) and reports other metrics as unavailable.
-
 ## Runtime
 
 - **Language:** TypeScript (strict mode)
 - **Effect library:** [Effect](https://effect.website/) v3.x (`effect` npm package)
-- **Runtime style:** A single call to `Effect.runPromise` at the entry point (`src/index.ts`). This is the only place in the codebase where effects are actually executed. Everything above that call is a *description* of what to do, not the doing of it.
+- **Runtime style:** A single call to `Effect.runPromise` at the entry point. Everything above that call is a *description* of what to do, not the doing of it.
 - **Execution modes:**
-  - **Single-shot:** Runs the analysis pipeline once and exits.
-  - **Monitoring:** Uses `Effect.repeat(Schedule.spaced(...))` with a configurable interval for continuous polling.
-- **Configuration:** All operational parameters (thresholds, paths, concurrency, retries) are loaded via Effect's `Config` module from environment variables with sensible defaults.
-- **Testability:** The test suite (`src/test.ts`) runs the full workflow with `TestLayer` — zero network calls, zero filesystem access, deterministic timestamps, fully reproducible.
+  - **Single-shot:** Runs the pipeline once. Shows comparison deltas against last saved result.
+  - **Monitoring:** `Effect.Stream` pipeline with configurable interval. Tracks previous results via `Stream.zipWithPrevious` for live deltas.
+  - **Demo:** Test layers with live display — guaranteed output, zero network.
+- **Testability:** 65 tests across 8 categories. Pure domain tests need zero infrastructure. Effectful tests swap layers. Failure tests prove graceful degradation. Schema tests prove validation catches malformed input. Failover tests prove `Effect.orElse` composition.
 
 ## Why This Qualifies
 
-1. **Effects are modelled explicitly:** Every side effect is a method on a `Context.Tag` service — 6 custom services plus Effect's built-in `Schedule` and `Config`. There are no hidden `fetch()` calls, no `fs.readFileSync()` in business logic, no stray `console.log()` in pure code, no `new Date()` outside the Clock service.
-2. **Effectful workflows are composed into pipelines:** The analysis pipeline in `src/workflows/analyse.ts` chains 6 services with pure transformations using `Effect.gen`, with retry policies, concurrency control, and graceful degradation.
-3. **Execution happens at the edge:** `Effect.runPromise` in `src/index.ts` is the single runtime boundary. Swap the layer, swap the world.
-4. **The design makes reasoning and testing better:**
-   - Pure domain logic is tested with zero infrastructure (19 pure tests).
-   - Effectful workflows are tested by providing mock layers (4 integration tests including failure scenarios).
-   - Error handling is typed and explicit: `PriceFeedError` and `StoreError` propagate through the Effect type system.
-   - Time is deterministic in tests via `ClockTest`.
-   - Configuration is testable via `AppConfigTest`.
+1. **Effects are modelled explicitly:** 7 custom services + 4 Effect built-in patterns. No hidden `fetch()`, `fs.*`, `console.*`, `Date.now()`, or mutable state outside declared service boundaries.
+2. **Effectful workflows are composed into pipelines:** The analysis pipeline chains rate limiting → network I/O with failover → schema validation → pure computation → persistence → notification. Monitor mode is a reactive Stream pipeline.
+3. **Execution happens at the edge:** `Effect.runPromise` in `src/index.ts` is the single runtime boundary.
+4. **The design makes reasoning, testing, and failure handling better:**
+   - `Ref`-based rate limiter prevents API abuse without global mutable state.
+   - `Effect.orElse` failover makes the system resilient to individual API outages.
+   - `Schema.brand` prevents type confusion at compile time; `Schema.decode` catches malformed data at runtime.
+   - Graceful degradation falls back to cached results when all sources fail.
+   - 65 tests prove every layer works in isolation and in composition.

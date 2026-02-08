@@ -15,29 +15,35 @@ A real-time portfolio risk analysis tool for DeFi assets, built with **effectful
 npm install
 ```
 
-### Run analysis (single-shot)
+### Run demo (no network required — guaranteed output)
+
+```bash
+npm run demo
+```
+
+Uses deterministic test data to demonstrate the full pipeline. **Judges: start here.**
+
+### Run analysis (single-shot, live data)
 
 ```bash
 npm start
 ```
 
-### Run monitoring mode (configurable interval)
+### Run monitoring mode (Stream-based, configurable interval)
 
 ```bash
 npm run monitor
 ```
 
-### Run tests
+### Run tests (65 tests, zero network)
 
 ```bash
 npm test
 ```
 
-Tests run with mock layers — no network access, no filesystem writes, deterministic timestamps, fully reproducible.
-
 ### Custom portfolio
 
-Edit `portfolio.json` to configure your holdings:
+Edit `portfolio.json`:
 
 ```json
 {
@@ -49,7 +55,7 @@ Edit `portfolio.json` to configure your holdings:
 }
 ```
 
-CoinGecko IDs can be found at [coingecko.com](https://www.coingecko.com/).
+CoinGecko IDs: [coingecko.com](https://www.coingecko.com/)
 
 ### Environment variable configuration
 
@@ -79,64 +85,85 @@ THRESHOLD_VAR_CRITICAL=0.08 MONITOR_INTERVAL=30 npm run monitor
 ## What It Does
 
 1. **Loads** configuration from environment variables (thresholds, paths, concurrency)
-2. **Loads** your portfolio from a JSON config file
-3. **Fetches** live prices and 30-day historical data from CoinGecko (concurrently, with exponential backoff retries)
-4. **Computes** risk metrics using pure, deterministic calculations:
+2. **Validates** portfolio config with Effect Schema (rejects malformed input at I/O boundary)
+3. **Rate-limits** API calls using a `Ref`-based token bucket (prevents 429 errors)
+4. **Fetches** live prices from CoinGecko with automatic CoinCap failover (`Effect.orElse`)
+5. **Validates** API responses with Effect Schema (no `as any` casts)
+6. **Computes** risk metrics using pure, deterministic calculations:
    - **Value at Risk** (parametric, 95th and 99th percentile)
    - **Annualised volatility** from daily returns
    - **Sharpe ratio** (risk-adjusted return)
    - **Herfindahl-Hirschman Index** (portfolio concentration)
    - **Maximum drawdown** over 30-day window
-5. **Generates** risk alerts when configurable thresholds are breached
-6. **Persists** results to a history file (enables graceful degradation)
-7. **Displays** a formatted terminal dashboard with colour-coded metrics
-8. **Falls back** to cached data when the API is unavailable (graceful degradation)
+7. **Generates** risk alerts when configurable thresholds are breached
+8. **Compares** against previous analysis (shows coloured trend deltas)
+9. **Persists** results to history (enables graceful degradation and comparison)
+10. **Falls back** to cached data when all API sources fail
 
 ## Architecture
 
-See [`EFFECTS.md`](EFFECTS.md) for a complete description of the effect model.
+See [`EFFECTS.md`](EFFECTS.md) for the full effect model documentation.
 
 ### Key Principle
 
-Every side effect (network, file I/O, configuration, time, logging, alerts) is modelled as an explicit service using Effect's `Context.Tag` and `Layer` system. The pure domain logic in `src/domain/` has **zero** dependencies on any service — all risk calculations are deterministic functions.
+Every side effect is modelled as an explicit service. The pure domain has zero Effect dependencies.
 
 ### Project Structure
 
 ```
 src/
-├── index.ts              # Entry point — runtime & layer composition
+├── index.ts              # Entry point — runtime, layers, Stream pipeline
 ├── domain/
-│   ├── models.ts         # Pure domain types (no effects)
+│   ├── models.ts         # Pure types + branded primitives + Schema validation
 │   └── risk.ts           # Pure risk calculations (no effects)
 ├── services/
-│   ├── PriceFeed.ts      # Network I/O service (+ test mock)
-│   ├── PortfolioStore.ts # File I/O service (+ test mock)
-│   ├── AppConfig.ts      # Configuration service (+ test mock)
-│   ├── Clock.ts          # Time observation service (+ test mock)
-│   ├── Logger.ts         # Logging service (+ silent mock)
-│   └── AlertNotifier.ts  # Alert notification service (+ silent mock)
+│   ├── PriceFeed.ts      # Network I/O (CoinGecko → CoinCap failover, Schema validated)
+│   ├── PortfolioStore.ts # File I/O (Schema validated)
+│   ├── AppConfig.ts      # Configuration (env vars via Effect Config)
+│   ├── Clock.ts          # Time observation (deterministic in tests)
+│   ├── RateLimiter.ts    # Functional state (Ref-based token bucket)
+│   ├── Logger.ts         # Logging
+│   └── AlertNotifier.ts  # Alert notification
 ├── workflows/
 │   └── analyse.ts        # Composed effectful analysis pipeline
-├── display.ts            # Terminal output formatting
-└── test.ts               # Test suite (pure + effectful + failure tests)
+├── display.ts            # Terminal output with trend deltas
+├── demo.ts               # Demo mode (test layers, guaranteed output)
+└── test.ts               # 65 tests across 8 categories
 ```
 
-### Services (6 custom + 2 Effect built-in)
+### Services (7 custom + Effect built-ins)
 
-| Service | Effect | Live | Test |
-|---|---|---|---|
-| `PriceFeed` | Network I/O | CoinGecko API | Deterministic synthetic data |
-| `PortfolioStore` | File I/O | Node.js `fs` | In-memory mock |
-| `AppConfig` | Configuration | Environment variables | Hardcoded defaults |
-| `Clock` | Time observation | System clock | Fixed date |
-| `Logger` | Console I/O | Formatted stdout | Silent no-op |
-| `AlertNotifier` | Console I/O | Coloured alerts | Silent no-op |
+| Service | Effect | Key Pattern |
+|---|---|---|
+| `PriceFeed` | Network I/O | `Effect.orElse` failover, `Schema.decodeUnknown` |
+| `PortfolioStore` | File I/O | `Schema.decodeUnknownSync` validation |
+| `AppConfig` | Configuration | `Config.withDefault` from env vars |
+| `Clock` | Time | Deterministic in tests |
+| `RateLimiter` | Functional state | `Ref.make` + `Ref.modify` (token bucket) |
+| `Logger` | Console I/O | Structured output |
+| `AlertNotifier` | Console I/O | Coloured alerts |
 
-Plus `Schedule` (time/retry) and `Effect.all` (concurrency) from Effect's standard library.
+Plus `Stream` (reactive pipeline), `Schedule` (time/retry), `Effect.all` (concurrency), `Schema` (validation).
+
+### Test Coverage (65 tests)
+
+| Category | Count | What it proves |
+|---|---|---|
+| Daily returns | 7 | Pure math correctness + edge cases |
+| Portfolio valuation | 9 | Weights, missing prices, empty portfolio |
+| Risk metrics | 11 | VaR, volatility, HHI, Sharpe, drawdown |
+| Portfolio returns | 3 | Weighted returns, empty data |
+| Alert generation | 9 | Threshold logic, multiple alerts, zero-value |
+| Schema validation | 7 | Rejects bad input: missing fields, negative amounts, wrong types |
+| Effectful workflow | 7 | Full pipeline with mock layers |
+| Graceful degradation | 3 | API failure → cached fallback |
+| Single-asset | 3 | Edge case: one holding |
+| Large portfolio | 3 | 10 assets, weight correctness |
+| PriceFeed failover | 3 | Primary fails → fallback used |
 
 ## Tech Stack
 
 - **Language:** TypeScript (strict mode)
 - **Effect system:** [Effect](https://effect.website/) v3.x
-- **Data source:** [CoinGecko API](https://www.coingecko.com/en/api) (free tier, no key required)
+- **Data sources:** [CoinGecko](https://www.coingecko.com/en/api) (primary) + [CoinCap](https://docs.coincap.io/) (fallback)
 - **Zero external runtime dependencies** beyond `effect`

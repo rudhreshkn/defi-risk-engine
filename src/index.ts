@@ -87,10 +87,11 @@ const monitorStream = (
   portfolio: Portfolio,
   intervalSeconds: number
 ) =>
-  // Create an infinite stream of ticks on a schedule
-  Stream.fromSchedule(Schedule.spaced(`${intervalSeconds} seconds`)).pipe(
-    // Prepend an immediate first tick (don't wait for first interval)
-    Stream.prepend(0),
+  // Create an infinite stream: immediate first tick, then on schedule
+  Stream.concat(
+    Stream.make(0),
+    Stream.fromSchedule(Schedule.spaced(`${intervalSeconds} seconds`))
+  ).pipe(
     // For each tick, run the analysis pipeline
     Stream.mapEffect((_tick) =>
       runAnalysis(portfolio).pipe(
